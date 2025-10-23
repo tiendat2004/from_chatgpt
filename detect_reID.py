@@ -3,7 +3,7 @@ import cv2
 from deep_sort_realtime.deepsort_tracker import DeepSort
 model = YOLO("yolov8n.pt")  
 tracker = DeepSort(max_age=10)
-cap = cv2.VideoCapture(0)  
+cap = cv2.VideoCapture(1)  
 target_id = None
 while True:
     ret, frame = cap.read()
@@ -37,9 +37,9 @@ while True:
             cv2.circle(frame, (cx, cy), 5, (255, 255, 255), -1)
 
             if cx < center_frame - 80:
-                direction = " Rẽ phải"
-            elif cx > center_frame + 80:
                 direction = " Rẽ trái"
+            elif cx > center_frame + 80:
+                direction = " Rẽ phải"
             else:
                 direction = "  Đi thẳng"
 
