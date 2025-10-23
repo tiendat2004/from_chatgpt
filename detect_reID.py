@@ -19,6 +19,9 @@ while True:
     tracks = tracker.update_tracks(detections, frame=frame)
     h, w, _ = frame.shape
     center_frame = w // 2
+    frame_area = w * h
+    far_threshold = 0.05 * frame_area  # Ngưỡng xa - tiến lên
+    near_threshold = 0.3 * frame_area   # Ngưỡng gần - lùi lại
     for track in tracks:
         if not track.is_confirmed():
             continue
@@ -35,12 +38,17 @@ while True:
 
         if track_id == target_id:
             cv2.circle(frame, (cx, cy), 5, (255, 255, 255), -1)
-
-            if cx < center_frame - 80:
-                direction = " Rẽ phải"
-            elif cx > center_frame + 80:
-                direction = " Rẽ trái"
+            area = (r - l) * (b - t)
+            if area < far_threshold:
+                direction = " Tiến lên"
+            elif area > near_threshold:
+                direction = " Lùi lại"
             else:
+             if cx < center_frame - 80:
+                direction = " Rẽ phải"
+             elif cx > center_frame + 80:
+                direction = " Rẽ trái"
+             else:
                 direction = "  Đi thẳng"
 
             print(f"ID {track_id}: {direction}")
