@@ -25,7 +25,7 @@ while True:
         largest = max(persons, key=lambda b: (b[2]-b[0])*(b[3]-b[1]))
         x1, y1, x2, y2 = map(int, largest)
         cx = (x1 + x2) // 2
-      area = (x2 - x1) * (y2 - y1)
+        area = (x2 - x1) * (y2 - y1)
         if cx < frame_center - threshold:
             command = "Rẽ trái"
         elif cx > frame_center + threshold:
