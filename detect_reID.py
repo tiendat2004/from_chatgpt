@@ -1,37 +1,87 @@
 from ultralytics import YOLO
 import cv2
+import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
-model = YOLO("yolov8n.pt")  
-tracker = DeepSort(max_age=20)
-cap = cv2.VideoCapture(0)  
+from collections import defaultdict, deque
+
 id_muc_tieu = None
 vi_tri_click = None
+track_history = defaultdict(lambda: deque(maxlen=30))
+model = YOLO("yolov8m-pose.pt")
+tracker = DeepSort(
+    max_age=150,
+    n_init=3,
+    max_iou_distance=0.7,
+    max_cosine_distance=0.3,
+    nn_budget=100,
+    nms_max_overlap=0.7,
+    embedder="mobilenet"
+)
 def xu_ly_click_chuot(event, x, y, flags, param):
     global id_muc_tieu, vi_tri_click
     if event == cv2.EVENT_LBUTTONDOWN:
         vi_tri_click = (x, y)
         print(f"Đã click tại: ({x}, {y})")
+
+def predict_position(track_id, history):
+    if len(history) < 3:
+        return None
+    recent = list(history)[-5:]
+    velocities = []
+    for i in range(len(recent) - 1):
+        vx = recent[i+1][0] - recent[i][0]
+        vy = recent[i+1][1] - recent[i][1]
+        velocities.append((vx, vy))
+    if not velocities:
+        return recent[-1]
+    avg_vx = sum(v[0] for v in velocities) / len(velocities)
+    avg_vy = sum(v[1] for v in velocities) / len(velocities)
+    last_pos = recent[-1]
+    predicted = (int(last_pos[0] + avg_vx * 2), int(last_pos[1] + avg_vy * 2))
+    return predicted
+cap = cv2.VideoCapture(0)
 cv2.namedWindow("YOLOv8 + DeepSORT Tracking")
 cv2.setMouseCallback("YOLOv8 + DeepSORT Tracking", xu_ly_click_chuot)
 print("Click chuột vào người muốn theo dõi!")
-print("ID sẽ được chọn tự động")
+# ID sẽ được chọn tự động
+frame_count = 0
+target_lost_frames = 0
+MAX_LOST_FRAMES = 50
+
 while True:
     ret, frame = cap.read()
     if not ret:
         break
-    results = model(frame, classes=[0]) 
+    frame_count += 1
+    scale = 0.5
+    frame = cv2.resize(frame, None, fx=scale, fy=scale)
+    conf_high = 0.55
+    conf_low = 0.4
+    use_low_conf = (id_muc_tieu is not None and target_lost_frames > 5)
+    conf_threshold = conf_low if use_low_conf else conf_high
+    results = model(frame, classes=[0], conf=conf_threshold, iou=0.5)
     detections = []
     for r in results:
         for box in r.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             conf = float(box.conf)
-            detections.append(([x1, y1, x2 - x1, y2 - y1], conf, "person"))
+            if conf > conf_threshold:
+                x1_int, y1_int, x2_int, y2_int = int(x1), int(y1), int(x2), int(y2)
+                w, h = x2_int - x1_int, y2_int - y1_int
+                if w > 20 and h > 40:
+                    person_region = frame[y1_int:y2_int, x1_int:x2_int]
+                    if person_region.size > 0:
+                        detections.append(([x1, y1, w, h], conf, person_region))
+    
+    # ĐÃ XÓA PHẦN VẼ VÒNG TRÒN DỰ ĐOÁN Ở ĐÂY
+    
     tracks = tracker.update_tracks(detections, frame=frame)
-    h, w, _ = frame.shape
-    center_frame = w // 2
-    frame_area = w * h
-    far_threshold = 0.05 * frame_area  # Ngưỡng xa - tiến lên
-    near_threshold = 0.3 * frame_area   # Ngưỡng gần - lùi lại
+    h_frame, w_frame, _ = frame.shape
+    center_frame = w_frame // 2
+    frame_area = w_frame * h_frame
+    far_threshold = 0.05 * frame_area
+    near_threshold = 0.3 * frame_area
+    
     if vi_tri_click is not None:
         closest_track = None
         min_distance = float('inf')
@@ -46,12 +96,14 @@ while True:
             if distance < min_distance:
                 min_distance = distance
                 closest_track = track_id
-        if closest_track is not None and min_distance < 100:
+        if closest_track is not None and min_distance < 150:
             id_muc_tieu = closest_track
+            target_lost_frames = 0
             print(f"Đã chọn mục tiêu: ID {id_muc_tieu}")
         else:
             print("Không tìm thấy người gần vị trí click")
         vi_tri_click = None
+    target_found = False
     for track in tracks:
         if not track.is_confirmed():
             continue
@@ -59,10 +111,14 @@ while True:
         l, t, r, b = track.to_ltrb()
         cx = int((l + r) / 2)
         cy = int((t + b) / 2)
+        track_history[track_id].append((cx, cy))
         if id_muc_tieu is None:
             id_muc_tieu = track_id
-            print(f"Mục tiêu: {id_muc_tieu}")
+            target_lost_frames = 0
+            print(f"Mục tiêu tự động: {id_muc_tieu}")
         if track_id == id_muc_tieu:
+            target_found = True
+            target_lost_frames = 0
             color = (0, 255, 0)
             cv2.rectangle(frame, (int(l), int(t)), (int(r), int(b)), color, 2)
             cv2.putText(frame, f"TARGET:{track_id}", (int(l), int(t) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
@@ -71,7 +127,7 @@ while True:
             if area < far_threshold:
                 direction = "Tien len"
             elif area > near_threshold:
-                direction = "LLui lai"
+                direction = "Lui lai"
             else:
                 if cx < center_frame - 80:
                     direction = "Re phai"
@@ -79,30 +135,39 @@ while True:
                     direction = "Re trai"
                 else:
                     direction = "Di thang"
-            print(f"ID {track_id}: {direction}")
-            info_text = [
-                f"TARGET: {track_id}",
-                f"LENH: {direction}",
-                f"Vi tri: ({cx}, {cy})"
-            ]
+            info_text = [f"TARGET: {track_id}", f"LENH: {direction}", f"Vi tri: ({cx}, {cy})"]
             for i, text in enumerate(info_text):
                 cv2.putText(frame, text, (10, 30 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         else:
             color = (0, 0, 255)
             cv2.rectangle(frame, (int(l), int(t)), (int(r), int(b)), color, 1)
             cv2.putText(frame, f"ID:{track_id}", (int(l), int(t) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-    cv2.line(frame, (center_frame, 0), (center_frame, h), (255, 255, 0), 2)
+    if not target_found and id_muc_tieu is not None:
+        target_lost_frames += 1
+        warning_text = f"MAT TARGET! ({target_lost_frames}/{MAX_LOST_FRAMES})"
+        cv2.putText(frame, warning_text, (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        # ĐÃ XÓA PHẦN VẼ VÒNG TRÒN KHI ĐANG TÌM KIẾM Ở ĐÂY
+        if target_lost_frames > MAX_LOST_FRAMES:
+            print(f"Đã mất target ID {id_muc_tieu} quá lâu. Chọn lại mục tiêu!")
+            id_muc_tieu = None
+            target_lost_frames = 0  
+    cv2.line(frame, (center_frame, 0), (center_frame, h_frame), (255, 255, 0), 2)
     if id_muc_tieu is None:
         huong_dan = "Click chuot de chon nguoi theo doi"
+        color_guide = (255, 255, 255)
     else:
-        huong_dan = f"Dang theo doi ID: {id_muc_tieu} - Nhan 'c' de chon lai"
-    cv2.putText(frame, huong_dan, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        status = "OK" if target_found else f"MAT ({target_lost_frames})"
+        huong_dan = f"ID: {id_muc_tieu} - Status: {status} - 'c': chon lai"
+        color_guide = (0, 255, 0) if target_found else (0, 0, 255)
+    cv2.putText(frame, huong_dan, (10, h_frame - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_guide, 2)
+    cv2.putText(frame, f"Detected: {len(tracks)} persons", (w_frame - 200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     cv2.imshow("YOLOv8 + DeepSORT Tracking", frame)
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
     elif key == ord('c'):
         id_muc_tieu = None
+        target_lost_frames = 0
         print("Đã xóa lựa chọn, click để chọn mục tiêu mới")
 cap.release()
 cv2.destroyAllWindows()
